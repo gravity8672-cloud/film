@@ -1,16 +1,15 @@
 // ---------------------------------------------------------------------------
-// CineSync — serverless watch party.
-// Sync runs peer-to-peer over WebRTC; signaling uses public Nostr relays via
-// Trystero, so there is NO backend to run. Host it as a static file anywhere.
+// CineSync — watch party.
 //
-// NOTE: Trystero is loaded dynamically (inside enterRoom) instead of as a
-// top-level import. That way the UI always works even if the network module
-// fails to load (e.g. opened as a local file:// page), and we can show a clear
-// error instead of the whole script dying silently.
+// Sync transport: a lightweight public MQTT-over-WebSocket message bus.
+// We only need to share tiny control messages (play/pause/seek/chat), NOT the
+// video. Each viewer loads the movie from its own URL on their own connection.
+// Routing those tiny messages through a public broker over wss:// works across
+// ANY networks (mobile data + wifi + different countries) with no NAT/TURN
+// problems and no peer-to-peer firewall issues. No backend, no accounts.
 // ---------------------------------------------------------------------------
-let joinRoom = null
 
-const APP_ID = 'cinesync-watch-party-v1'
+const APP_ID = 'cinesync/v2'
 
 // ---- DOM ----
 const $ = (id) => document.getElementById(id)
@@ -26,7 +25,6 @@ const chatLog = $('chatLog'), chatForm = $('chatForm'), chatInput = $('chatInput
 const toast = $('toast')
 
 // ---- State ----
-let room = null
 let myName = 'Guest'
 let myId = Math.random().toString(36).slice(2, 9)
 let playlist = []          // [{id, url, title, type}]
@@ -37,8 +35,10 @@ let ytPlayer = null
 let ytReady = false
 let activeKind = null       // 'video' | 'youtube'
 
-// Trystero senders (assigned after joinRoom)
-let sendCtrl, sendState, sendChat, sendPlaylist, sendHello
+// ---- Transport (MQTT bus) ----
+let mqttClient = null
+let busTopic = null
+let peers = {}              // id -> { name, last }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,6 +67,10 @@ function detectType(url) {
 function ytIdFromUrl(url) {
   const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([\w-]{11})/)
   return m ? m[1] : null
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +107,7 @@ function loadItem(index, { broadcast = true } = {}) {
   }
   nowPlaying.textContent = '▶ ' + item.title
   renderPlaylist()
-  if (broadcast) sendCtrl?.({ kind: 'load', index, t: 0 })
+  if (broadcast) sendCtrl({ kind: 'load', index, t: 0 })
 }
 
 // ---- YouTube ----
@@ -137,9 +141,9 @@ function onYtStateChange(e) {
   if (applyingRemote || activeKind !== 'youtube') return
   const YT = window.YT
   if (e.data === YT.PlayerState.PLAYING) {
-    sendCtrl?.({ kind: 'play', t: ytPlayer.getCurrentTime() })
+    sendCtrl({ kind: 'play', t: ytPlayer.getCurrentTime() })
   } else if (e.data === YT.PlayerState.PAUSED) {
-    sendCtrl?.({ kind: 'pause', t: ytPlayer.getCurrentTime() })
+    sendCtrl({ kind: 'pause', t: ytPlayer.getCurrentTime() })
   }
 }
 
@@ -169,9 +173,9 @@ function playerSeek(t) {
 }
 
 // ---- Local <video> events -> broadcast ----
-video.addEventListener('play',  () => { if (!applyingRemote) sendCtrl?.({ kind: 'play',  t: video.currentTime }) })
-video.addEventListener('pause', () => { if (!applyingRemote) sendCtrl?.({ kind: 'pause', t: video.currentTime }) })
-video.addEventListener('seeked',() => { if (!applyingRemote) sendCtrl?.({ kind: 'seek',  t: video.currentTime }) })
+video.addEventListener('play',  () => { if (!applyingRemote) sendCtrl({ kind: 'play',  t: video.currentTime }) })
+video.addEventListener('pause', () => { if (!applyingRemote) sendCtrl({ kind: 'pause', t: video.currentTime }) })
+video.addEventListener('seeked',() => { if (!applyingRemote) sendCtrl({ kind: 'seek',  t: video.currentTime }) })
 
 // ---------------------------------------------------------------------------
 // Apply remote control events
@@ -204,8 +208,8 @@ function applyControl(msg) {
 
 // Heartbeat for drift correction (everyone sends; receivers self-correct)
 setInterval(() => {
-  if (!room || currentIndex < 0 || playerIsPaused()) return
-  sendCtrl?.({ kind: 'heartbeat', t: playerGetTime() })
+  if (!mqttClient || currentIndex < 0 || playerIsPaused()) return
+  sendCtrl({ kind: 'heartbeat', t: playerGetTime() })
 }, 4000)
 
 // ---------------------------------------------------------------------------
@@ -265,10 +269,6 @@ function renderPlaylist() {
   })
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))
-}
-
 function addItem(url, title) {
   url = url.trim()
   if (!url) return
@@ -277,7 +277,7 @@ function addItem(url, title) {
   const item = { id: Math.random().toString(36).slice(2, 9), url, title: (title || '').trim() || guessTitle(url), type }
   playlist.push(item)
   renderPlaylist()
-  sendPlaylist?.(playlist)
+  sendPlaylist(playlist)
   if (currentIndex === -1) loadItem(playlist.length - 1)
   showToast('Added to playlist')
 }
@@ -290,7 +290,7 @@ function removeItem(id) {
   if (idx < currentIndex) currentIndex--
   else if (wasCurrent) { currentIndex = -1; teardownPlayers(); emptyState.classList.remove('hidden'); nowPlaying.textContent = '' }
   renderPlaylist()
-  sendPlaylist?.(playlist)
+  sendPlaylist(playlist)
 }
 
 function guessTitle(url) {
@@ -313,110 +313,166 @@ function addChat(who, text, system = false) {
 }
 
 // ---------------------------------------------------------------------------
+// Transport: load MQTT.js, connect to a public broker, pub/sub by room code
+// ---------------------------------------------------------------------------
+function loadMqttLib() {
+  return new Promise((resolve, reject) => {
+    if (window.mqtt) return resolve(window.mqtt)
+    const cdns = [
+      'https://cdn.jsdelivr.net/npm/mqtt@5/dist/mqtt.min.js',
+      'https://unpkg.com/mqtt@5/dist/mqtt.min.js'
+    ]
+    let i = 0
+    const tryNext = () => {
+      if (i >= cdns.length) return reject(new Error('mqtt lib failed'))
+      const s = document.createElement('script')
+      s.src = cdns[i++]
+      s.onload = () => resolve(window.mqtt)
+      s.onerror = tryNext
+      document.head.appendChild(s)
+    }
+    tryNext()
+  })
+}
+
+function tryBroker(mqtt, url, roomCode) {
+  return new Promise((resolve) => {
+    let settled = false
+    let client
+    try {
+      client = mqtt.connect(url, { clientId: 'cs_' + myId, clean: true, keepalive: 30, reconnectPeriod: 5000, connectTimeout: 8000 })
+    } catch { return resolve(null) }
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; try { client.end(true) } catch {}; resolve(null) }
+    }, 9000)
+    client.on('connect', () => {
+      if (settled) return
+      settled = true; clearTimeout(timer); resolve(client)
+    })
+    client.on('error', () => {
+      if (settled) return
+      settled = true; clearTimeout(timer); try { client.end(true) } catch {}; resolve(null)
+    })
+  })
+}
+
+async function connectBus(roomCode) {
+  const mqtt = await loadMqttLib()
+  const brokers = [
+    'wss://broker.emqx.io:8084/mqtt',
+    'wss://broker.hivemq.com:8884/mqtt',
+    'wss://test.mosquitto.org:8081/mqtt'
+  ]
+  for (const url of brokers) {
+    const client = await tryBroker(mqtt, url, roomCode)
+    if (client) { mqttClient = client; setupBus(roomCode); return true }
+  }
+  return false
+}
+
+function setupBus(roomCode) {
+  busTopic = APP_ID + '/' + roomCode
+  mqttClient.subscribe(busTopic)
+  mqttClient.on('message', (_t, payload) => {
+    try { handleBus(JSON.parse(payload.toString())) } catch {}
+  })
+  mqttClient.on('reconnect', () => setStatus('connecting'))
+  mqttClient.on('connect', () => { setStatus('connected'); publishBus({ t: 'hello', name: myName }) })
+  mqttClient.on('close', () => setStatus('connecting'))
+
+  setStatus('connected')
+  publishBus({ t: 'hello', name: myName })
+  // presence ping + prune
+  setInterval(() => publishBus({ t: 'presence', name: myName }), 5000)
+  setInterval(prunePeers, 5000)
+}
+
+function publishBus(obj) {
+  if (!mqttClient || !busTopic) return
+  obj._from = myId
+  try { mqttClient.publish(busTopic, JSON.stringify(obj)) } catch {}
+}
+
+function handleBus(m) {
+  if (!m || m._from === myId) return
+  const now = Date.now()
+  if (m._from) {
+    const known = !!peers[m._from]
+    peers[m._from] = { name: m.name || (peers[m._from] && peers[m._from].name) || 'Guest', last: now }
+    if (!known) { updatePeerCount(); showToast('🎉 ' + peers[m._from].name + ' connected!') }
+    else updatePeerCount()
+  }
+  switch (m.t) {
+    case 'hello':
+      addChat('', (m.name || 'Someone') + ' joined', true)
+      publishBus({ t: 'presence', name: myName })
+      // send current state to the newcomer
+      setTimeout(() => publishBus({ t: 'state', to: m._from, snap: snapshot() }), 400)
+      break
+    case 'presence':
+      break
+    case 'ctrl':
+      applyControl(m.msg)
+      break
+    case 'chat':
+      addChat(m.name, m.text)
+      break
+    case 'plist':
+      playlist = m.playlist || []
+      renderPlaylist()
+      break
+    case 'state':
+      if (m.to === myId) applySnapshot(m.snap)
+      break
+  }
+}
+
+function prunePeers() {
+  const now = Date.now()
+  let changed = false
+  for (const id in peers) {
+    if (now - peers[id].last > 16000) { delete peers[id]; changed = true }
+  }
+  if (changed) updatePeerCount()
+}
+
+// ---- Typed senders used across the app ----
+function sendCtrl(msg)      { publishBus({ t: 'ctrl', msg }) }
+function sendChat(o)        { publishBus({ t: 'chat', name: o.name, text: o.text }) }
+function sendPlaylist(pl)   { publishBus({ t: 'plist', playlist: pl }) }
+function sendHello()        { publishBus({ t: 'hello', name: myName }) }
+
+function updatePeerCount() {
+  peerCount.textContent = Object.keys(peers).length + 1
+}
+
+function setStatus(state) {
+  statusDot.className = 'dot ' + state
+  statusText.textContent = state === 'connected' ? 'connected' : (state === 'error' ? 'connection failed' : 'connecting…')
+}
+
+// ---------------------------------------------------------------------------
 // Room lifecycle
 // ---------------------------------------------------------------------------
 async function enterRoom(code) {
   myName = (nameInput.value || '').trim() || 'Guest'
   code = code.toUpperCase()
   roomCodeLabel.textContent = code
-  // Switch to the room view immediately so the button always "does something".
   lobby.classList.add('hidden')
   roomEl.classList.remove('hidden')
   history.replaceState(null, '', '?room=' + code)
   setStatus('connecting')
 
-  // Load the P2P engine on demand, with a clear error if the network blocks it.
-  if (!joinRoom) {
-    const sources = [
-      'https://esm.sh/trystero@0.21.5/nostr',
-      'https://cdn.jsdelivr.net/npm/trystero@0.21.5/+esm'
-    ]
-    for (const src of sources) {
-      try {
-        const mod = await import(src)
-        joinRoom = mod.joinRoom
-        if (joinRoom) break
-      } catch (e) { /* try next source */ }
-    }
-    if (!joinRoom) {
-      setStatus('error')
-      statusText.textContent = 'connection blocked'
-      addChat('', '⚠️ Could not load the sync engine. Make sure this page is hosted online (https://) and opened in a normal browser tab — not a local file or a preview window.', true)
-      showToast('Sync engine blocked — see chat for details', 6000)
-      return
-    }
+  let ok = false
+  try { ok = await connectBus(code) } catch { ok = false }
+
+  if (!ok) {
+    setStatus('error')
+    addChat('', '⚠️ Could not reach the sync service. Check your internet connection and reload. If you are on a restricted/work network, try a different network.', true)
+    showToast('Could not connect — see chat', 6000)
+    return
   }
-
-  // RTC config: STUN helps peers find each other; TURN relays the connection
-  // when a direct one is impossible (e.g. phone on mobile data + PC on wifi,
-  // which sit behind strict/symmetric NATs). Without TURN, cross-network joins
-  // frequently fail. These are public/free servers.
-  const rtcConfig = {
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' },
-      {
-        urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp'
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      }
-    ]
-  }
-
-  room = joinRoom({ appId: APP_ID, rtcConfig }, code)
-
-  ;[sendCtrl]     = room.makeAction('ctrl')
-  ;[sendState]    = room.makeAction('state')
-  ;[sendChat]     = room.makeAction('chat')
-  ;[sendPlaylist] = room.makeAction('plist')
-  ;[sendHello]    = room.makeAction('hello')
-
-  const [, getCtrl]     = room.makeAction('ctrl')
-  const [, getState]    = room.makeAction('state')
-  const [, getChat]     = room.makeAction('chat')
-  const [, getPlaylist] = room.makeAction('plist')
-  const [, getHello]    = room.makeAction('hello')
-
-  getCtrl((msg) => applyControl(msg))
-  getState((s) => applySnapshot(s))
-  getChat((m) => addChat(m.name, m.text))
-  getPlaylist((pl) => { playlist = pl || []; renderPlaylist() })
-  getHello((h, peerId) => {
-    addChat('', `${h.name} joined`, true)
-    // Existing members send the newcomer the current state
-    setTimeout(() => sendState(snapshot(), peerId), 400)
-  })
-
-  room.onPeerJoin((peerId) => {
-    updatePeerCount()
-    setStatus('connected')
-    showToast('🎉 A friend connected!')
-  })
-  room.onPeerLeave(() => {
-    updatePeerCount()
-  })
-
-  // Announce ourselves shortly after joining
-  setTimeout(() => {
-    setStatus('connected')
-    sendHello({ name: myName })
-    addChat('', 'You joined as ' + myName, true)
-  }, 700)
-}
-
-function updatePeerCount() {
-  const n = room ? Object.keys(room.getPeers()).length + 1 : 1
-  peerCount.textContent = n
-}
-
-function setStatus(state) {
-  statusDot.className = 'dot ' + state
-  statusText.textContent = state === 'connected' ? 'connected' : 'connecting…'
+  addChat('', 'You joined as ' + myName, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +487,7 @@ joinBtn.addEventListener('click', () => {
 joinCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinBtn.click() })
 
 leaveBtn.addEventListener('click', () => {
-  if (room) room.leave()
+  if (mqttClient) { try { mqttClient.end(true) } catch {} }
   location.href = location.pathname
 })
 
@@ -457,13 +513,12 @@ chatForm.addEventListener('submit', (e) => {
   const text = chatInput.value.trim()
   if (!text) return
   addChat(myName, text)
-  sendChat?.({ name: myName, text })
+  sendChat({ name: myName, text })
   chatInput.value = ''
 })
 
 resyncBtn.addEventListener('click', () => {
-  // Ask peers for fresh state by re-announcing
-  sendHello?.({ name: myName })
+  sendHello()
   showToast('Re-syncing…')
 })
 
