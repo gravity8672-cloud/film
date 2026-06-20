@@ -88,8 +88,8 @@ input::placeholder { color: #5b6378; }
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(1100px 700px at 32% 42%, rgba(11,13,18,.35), transparent 70%),
-    linear-gradient(180deg, rgba(11,13,18,.55), rgba(11,13,18,.82));
+    radial-gradient(1100px 750px at 50% 45%, rgba(11,13,18,.28), transparent 72%),
+    linear-gradient(180deg, rgba(11,13,18,.42), rgba(11,13,18,.72));
   z-index: 1;
 }
 @keyframes lobbyKenBurns {
@@ -97,21 +97,21 @@ input::placeholder { color: #5b6378; }
   to   { transform: scale(1.12) translate(-2%, -1.5%); }
 }
 
-/* Drifting sakura petals (added by JS) */
+/* Drifting light motes (added by JS) */
 .petal-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
 .petal {
   position: absolute;
   top: -6%;
-  background: radial-gradient(circle at 30% 30%, #ffd9ec, #ff7ab8);
-  border-radius: 100% 0 100% 0;
-  filter: drop-shadow(0 0 4px rgba(255,120,184,.55));
+  background: radial-gradient(circle at 50% 50%, rgba(255,255,255,.95), rgba(190,235,215,.45) 55%, transparent 70%);
+  border-radius: 50%;
+  filter: drop-shadow(0 0 6px rgba(205,255,230,.6));
   animation-name: petalFall;
   animation-timing-function: linear;
   animation-iteration-count: infinite;
 }
 @keyframes petalFall {
   0%   { transform: translateY(-10vh) translateX(0) rotate(0deg); }
-  100% { transform: translateY(112vh) translateX(48px) rotate(360deg); }
+  100% { transform: translateY(112vh) translateX(36px) rotate(180deg); }
 }
 
 @media (prefers-reduced-motion: reduce) {
