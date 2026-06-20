@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CineSync — Watch Together</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+</head>
+<body>
+  <!-- ============ LOBBY ============ -->
+  <section id="lobby" class="lobby">
+    <div class="lobby-card">
+      <div class="logo">🎬 <span>CineSync</span></div>
+      <p class="tagline">Watch movies in perfect sync with your friends.</p>
+
+      <label class="field">
+        <span>Your name</span>
+        <input id="nameInput" type="text" placeholder="e.g. Amine" maxlength="20" autocomplete="off" />
+      </label>
+
+      <div class="lobby-actions">
+        <button id="createBtn" class="btn btn-primary">Create a room</button>
+        <div class="or">or</div>
+        <div class="join-row">
+          <input id="joinCodeInput" type="text" placeholder="Enter room code" maxlength="8" autocomplete="off" />
+          <button id="joinBtn" class="btn">Join</button>
+        </div>
+      </div>
+
+      <p class="hint">Create a room, then share the link or code. Everyone who opens it watches together.</p>
+    </div>
+  </section>
+
+  <!-- ============ ROOM ============ -->
+  <section id="room" class="room hidden">
+    <header class="topbar">
+      <div class="brand">🎬 CineSync</div>
+      <div class="room-meta">
+        <span class="pill">Room <strong id="roomCodeLabel">----</strong></span>
+        <span class="pill" id="statusPill"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></span>
+        <span class="pill" id="peersPill">👥 <strong id="peerCount">1</strong></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="shareBtn" class="btn btn-small">🔗 Share link</button>
+        <button id="leaveBtn" class="btn btn-small btn-ghost">Leave</button>
+      </div>
+    </header>
+
+    <div class="stage">
+      <!-- PLAYER -->
+      <div class="player-col">
+        <div class="player-wrap" id="playerWrap">
+          <video id="video" playsinline controls></video>
+          <div id="ytContainer" class="yt-container hidden"></div>
+          <div id="emptyState" class="empty-state">
+            <div class="empty-icon">🍿</div>
+            <h3>No movie loaded</h3>
+            <p>Add a movie link in the playlist to start watching.</p>
+          </div>
+        </div>
+        <div class="now-playing" id="nowPlaying"></div>
+        <div class="sync-bar">
+          <button id="resyncBtn" class="btn btn-small">🔄 Re-sync to room</button>
+          <label class="auto-sync">
+            <input type="checkbox" id="autoSyncToggle" checked />
+            Auto-sync playback
+          </label>
+        </div>
+      </div>
+
+      <!-- SIDEBAR -->
+      <aside class="sidebar">
+        <div class="tabs">
+          <button class="tab active" data-tab="playlist">Playlist</button>
+          <button class="tab" data-tab="chat">Chat</button>
+        </div>
+
+        <!-- PLAYLIST TAB -->
+        <div class="tab-panel" id="tab-playlist">
+          <form id="addForm" class="add-form">
+            <input id="urlInput" type="text" placeholder="Paste movie URL (.mp4, .m3u8, YouTube)" autocomplete="off" />
+            <input id="titleInput" type="text" placeholder="Title (optional)" autocomplete="off" />
+            <button type="submit" class="btn btn-primary btn-block">+ Add to playlist</button>
+          </form>
+          <ul id="playlist" class="playlist"></ul>
+        </div>
+
+        <!-- CHAT TAB -->
+        <div class="tab-panel hidden" id="tab-chat">
+          <div id="chatLog" class="chat-log"></div>
+          <form id="chatForm" class="chat-form">
+            <input id="chatInput" type="text" placeholder="Message…" autocomplete="off" />
+            <button type="submit" class="btn btn-primary">Send</button>
+          </form>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
