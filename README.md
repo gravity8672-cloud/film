@@ -38,6 +38,27 @@ The actual movie is **not streamed from one person to another** — each viewer'
 - Hosting requires **HTTPS** (GitHub Pages provides this automatically). It will not work when opened as a local `file://` page.
 - Some browsers (e.g. Brave) may block WebRTC via shields — lower shields for the site if it won't connect.
 
+## Changing the lobby background
+
+The lobby background is a single image at the repo root: **`lucy-bg.jpg`**. To change it, just **replace that file, keeping the exact same name** (`styles.css` points to `url("lucy-bg.jpg")`, so no code change is needed):
+
+1. In the repo, open `lucy-bg.jpg` → delete it → commit.
+2. **Add file → Upload files**, upload your new image **renamed to exactly `lucy-bg.jpg`** → commit.
+3. Wait ~1 min for GitHub Pages to redeploy, then hard-refresh (Ctrl+Shift+R).
+
+**Recommended image specs:**
+
+| Spec | Recommendation |
+| --- | --- |
+| Aspect ratio | **16:9** (landscape / widescreen) |
+| Resolution | **1920×1080** ideal; **1200×675 minimum** |
+| Format | **JPG** (or PNG if it has transparency) |
+| File size | Keep **under ~1 MB** so the page loads fast on GitHub Pages |
+| Filename | Must be exactly **`lucy-bg.jpg`** |
+| Composition | The lobby card sits **centered**, so put the main subject **off to one side** (or use a scene/landscape) — anything dead-center will be hidden behind the card |
+
+**Cache tip:** the image URL has no version number, so browsers may keep showing the old picture after a swap. To force an update for everyone, bump the version in `styles.css` — change `url("lucy-bg.jpg")` to `url("lucy-bg.jpg?v=2")` (increase the number each time).
+
 ## Tech
 
 - Vanilla HTML / CSS / JavaScript
