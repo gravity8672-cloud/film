@@ -347,7 +347,28 @@ async function enterRoom(code) {
     }
   }
 
-  room = joinRoom({ appId: APP_ID }, code)
+  // RTC config: STUN helps peers find each other; TURN relays the connection
+  // when a direct one is impossible (e.g. phone on mobile data + PC on wifi,
+  // which sit behind strict/symmetric NATs). Without TURN, cross-network joins
+  // frequently fail. These are public/free servers.
+  const rtcConfig = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ]
+  }
+
+  room = joinRoom({ appId: APP_ID, rtcConfig }, code)
 
   ;[sendCtrl]     = room.makeAction('ctrl')
   ;[sendState]    = room.makeAction('state')
@@ -374,6 +395,7 @@ async function enterRoom(code) {
   room.onPeerJoin((peerId) => {
     updatePeerCount()
     setStatus('connected')
+    showToast('🎉 A friend connected!')
   })
   room.onPeerLeave(() => {
     updatePeerCount()
