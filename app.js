@@ -27,6 +27,8 @@ const toast = $('toast')
 // ---- State ----
 let myName = 'Guest'
 let myId = Math.random().toString(36).slice(2, 9)
+let isHost = false          // room creator (or whoever takes control) drives playback
+let hostId = null           // id of the current host that everyone follows
 let playlist = []          // [{id, url, title, type}]
 let currentIndex = -1
 let applyingRemote = false  // guard against rebroadcast loops
@@ -123,6 +125,12 @@ function loadItem(index, { broadcast = true } = {}) {
   if (broadcast) sendCtrl({ kind: 'load', index, t: 0 })
 }
 
+// Only the host may switch what everyone is watching.
+function requestLoad(i) {
+  if (!isHost) { showToast('🔒 Only the host can change the video'); return }
+  loadItem(i)
+}
+
 // ---- YouTube ----
 function ensureYouTubeApi() {
   return new Promise((resolve) => {
@@ -210,8 +218,15 @@ function applyControl(msg) {
     } else if (msg.kind === 'seek') {
       playerSeek(msg.t)
     } else if (msg.kind === 'heartbeat') {
-      if (autoSyncToggle.checked && !playerIsPaused() && drift > 1.5) {
-        playerSeek(msg.t)
+      if (!autoSyncToggle.checked) return
+      // Follow the host onto the right playlist item…
+      if (msg.index >= 0 && msg.index !== currentIndex) { loadItem(msg.index, { broadcast: false }); return }
+      // …then match the host's play/pause state and correct any drift.
+      if (msg.paused) {
+        if (!playerIsPaused()) playerPause()
+      } else {
+        if (playerIsPaused()) { playerSeek(msg.t); playerPlay() }
+        else if (drift > 1.2) playerSeek(msg.t)
       }
     }
   } finally {
@@ -221,9 +236,11 @@ function applyControl(msg) {
 
 // Heartbeat for drift correction (everyone sends; receivers self-correct)
 setInterval(() => {
-  if (!mqttClient || currentIndex < 0 || playerIsPaused()) return
-  sendCtrl({ kind: 'heartbeat', t: playerGetTime() })
-}, 4000)
+  // Only the host emits the heartbeat; everyone else follows it. The heartbeat
+  // carries the host's play/pause state + current item so followers self-heal.
+  if (!isHost || !mqttClient || currentIndex < 0) return
+  sendCtrl({ kind: 'heartbeat', t: playerGetTime(), paused: playerIsPaused(), index: currentIndex })
+}, 3000)
 
 // ---------------------------------------------------------------------------
 // Full-state sync (sent to newcomers)
@@ -233,11 +250,13 @@ function snapshot() {
     playlist,
     currentIndex,
     t: playerGetTime(),
-    paused: playerIsPaused()
+    paused: playerIsPaused(),
+    hostId
   }
 }
 function applySnapshot(s) {
   if (!s) return
+  if (s.hostId) { hostId = s.hostId; updateHostUI() }
   playlist = s.playlist || []
   renderPlaylist()
   if (s.currentIndex >= 0 && s.currentIndex < playlist.length) {
@@ -272,8 +291,8 @@ function renderPlaylist() {
       </div>
       <span class="pl-type">${item.type}</span>
       <button class="pl-remove" title="Remove">✕</button>`
-    li.querySelector('.pl-body').addEventListener('click', () => loadItem(i))
-    li.querySelector('.pl-index').addEventListener('click', () => loadItem(i))
+    li.querySelector('.pl-body').addEventListener('click', () => requestLoad(i))
+    li.querySelector('.pl-index').addEventListener('click', () => requestLoad(i))
     li.querySelector('.pl-remove').addEventListener('click', (e) => {
       e.stopPropagation()
       removeItem(item.id)
@@ -291,8 +310,8 @@ function addItem(url, title) {
   playlist.push(item)
   renderPlaylist()
   sendPlaylist(playlist)
-  if (currentIndex === -1) loadItem(playlist.length - 1)
-  showToast('Added to playlist')
+  if (currentIndex === -1 && isHost) loadItem(playlist.length - 1)
+  showToast(isHost ? 'Added to playlist' : 'Added — the host can press it to play')
 }
 
 function removeItem(id) {
@@ -450,12 +469,19 @@ window.addEventListener('online', () => {
 function publishBus(obj) {
   if (!mqttClient || !busTopic) return
   obj._from = myId
+  if (isHost) obj.host = true   // tag every host message so followers know the source of truth
   try { mqttClient.publish(busTopic, JSON.stringify(obj)) } catch {}
 }
 
 function handleBus(m) {
   if (!m || m._from === myId) return
   if (m.t === 'bye') { handleBye(m); return }
+  // Track who the host is. If someone else claims host while we thought we were,
+  // step down so there's always exactly one source of truth.
+  if (m.host) {
+    if (hostId !== m._from) { hostId = m._from; updateHostUI() }
+    if (isHost) { isHost = false; updateHostUI(); addChat('', '👑 ' + (m.name || 'Someone') + ' took over as host', true) }
+  }
   const now = Date.now()
   if (m._from) {
     const known = !!peers[m._from]
@@ -471,14 +497,16 @@ function handleBus(m) {
   }
   switch (m.t) {
     case 'hello':
-      // newcomer announced themselves -> reply with presence + current state
+      // newcomer announced themselves -> reply with presence; only the host
+      // sends the authoritative playback snapshot so newcomers don't get conflicting state.
       publishBus({ t: 'presence', name: myName })
-      setTimeout(() => publishBus({ t: 'state', to: m._from, snap: snapshot() }), 400)
+      if (isHost) setTimeout(() => publishBus({ t: 'state', to: m._from, snap: snapshot() }), 400)
       break
     case 'presence':
       break
     case 'ctrl':
-      applyControl(m.msg)
+      // Only obey control messages that come from the host.
+      if (!isHost && m.host) applyControl(m.msg)
       break
     case 'chat':
       addChat(m.name, m.text)
@@ -536,7 +564,7 @@ function beep(freq = 600, dur = 0.12) {
 }
 
 // ---- Typed senders used across the app ----
-function sendCtrl(msg)      { publishBus({ t: 'ctrl', msg }) }
+function sendCtrl(msg)      { if (isHost) publishBus({ t: 'ctrl', msg }) }   // only the host broadcasts playback control
 function sendChat(o)        { publishBus({ t: 'chat', name: o.name, text: o.text }) }
 function sendPlaylist(pl)   { publishBus({ t: 'plist', playlist: pl }) }
 function sendHello()        { publishBus({ t: 'hello', name: myName }) }
@@ -552,11 +580,13 @@ function renderMembers() {
   if (!bar) return
   const list = [{ id: myId, name: myName, me: true }]
   for (const id in peers) list.push({ id, name: peers[id].name || 'Guest' })
-  bar.innerHTML = '<span class="members-label">👥 In this room:</span>' + list.map((m) =>
-    `<span class="member-chip${m.me ? ' me' : ''}">
+  bar.innerHTML = '<span class="members-label">👥 In this room:</span>' + list.map((m) => {
+    const host = !!(hostId && m.id === hostId)
+    return `<span class="member-chip${m.me ? ' me' : ''}${host ? ' host' : ''}">
        <span class="member-dot" style="background:${colorFor(m.id)}"></span>
-       ${escapeHtml(m.name)}${m.me ? ' <em>(you)</em>' : ''}
-     </span>`).join('')
+       ${host ? '👑 ' : ''}${escapeHtml(m.name)}${m.me ? ' <em>(you)</em>' : ''}
+     </span>`
+  }).join('')
 }
 
 function setStatus(state) {
@@ -565,16 +595,52 @@ function setStatus(state) {
 }
 
 // ---------------------------------------------------------------------------
+// Host controls (only the host can play / pause / seek / switch video)
+// ---------------------------------------------------------------------------
+function updateHostUI() {
+  const note = $('hostNote')
+  if (note) note.textContent = isHost ? "👑 You're the host — you control playback" : '🔒 The host controls playback'
+  const tc = $('takeControlBtn')
+  if (tc) tc.classList.toggle('hidden', isHost)
+  // Followers get no native scrub/pause UI; the host keeps full controls.
+  if (isHost) video.setAttribute('controls', '')
+  else video.removeAttribute('controls')
+  renderMembers()
+}
+
+// Any follower can claim control (also rescues a room whose host has left).
+function takeControl() {
+  if (isHost) return
+  isHost = true
+  hostId = myId
+  updateHostUI()
+  // Presence is now tagged host:true; immediately push state so others follow us.
+  publishBus({ t: 'presence', name: myName })
+  sendCtrl({ kind: 'heartbeat', t: playerGetTime(), paused: playerIsPaused(), index: currentIndex })
+  addChat('', '👑 You took control of playback', true)
+  showToast("You're the host now 👑")
+}
+
+// Followers: tapping the video only ever RESUMES playback (needed for mobile
+// autoplay rules) — it can never pause, so it won't desync the room.
+playerWrap.addEventListener('click', () => {
+  if (!isHost && activeKind === 'video' && video.paused) playerPlay()
+})
+
+// ---------------------------------------------------------------------------
 // Room lifecycle
 // ---------------------------------------------------------------------------
-async function enterRoom(code) {
+async function enterRoom(code, asHost = false) {
   myName = (nameInput.value || '').trim() || 'Guest'
   code = code.toUpperCase()
+  isHost = asHost
+  if (isHost) hostId = myId
   currentRoomCode = code
   roomCodeLabel.textContent = code
   lobby.classList.add('hidden')
   roomEl.classList.remove('hidden')
   history.replaceState(null, '', '?room=' + code)
+  updateHostUI()
   setStatus('connecting')
 
   let ok = false
@@ -586,7 +652,7 @@ async function enterRoom(code) {
     showToast('Could not connect — see chat', 6000)
     return
   }
-  addChat('', 'You joined as ' + myName, true)
+  addChat('', 'You joined as ' + myName + (isHost ? ' 👑 (host — you control playback)' : ' (the host controls playback)'), true)
   renderMembers()
 }
 
@@ -595,12 +661,12 @@ async function enterRoom(code) {
 // ---------------------------------------------------------------------------
 createBtn.addEventListener('click', () => {
   const custom = sanitizeCode(customCodeInput.value)
-  enterRoom(custom || genCode())
+  enterRoom(custom || genCode(), true)   // creator is the host
 })
 joinBtn.addEventListener('click', () => {
   const code = sanitizeCode(joinCodeInput.value)
   if (!code) { showToast('Enter a room code'); return }
-  enterRoom(code)
+  enterRoom(code, false)                 // joiners follow the host
 })
 joinCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinBtn.click() })
 customCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createBtn.click() })
@@ -614,6 +680,7 @@ leaveBtn.addEventListener('click', () => {
 })
 
 reconnectBtn.addEventListener('click', () => reconnectNow())
+$('takeControlBtn').addEventListener('click', takeControl)
 
 // Only announce "bye" on an actual page unload (close/navigate away).
 // We intentionally do NOT do this on tab-switch/visibility changes, so

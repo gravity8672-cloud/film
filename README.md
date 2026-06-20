@@ -8,7 +8,8 @@ Watch movies together with your friends — perfectly synced, no matter where th
 
 ## What it does
 
-- **🔄 Synced playback** — when anyone hits play, pause, or seeks, everyone's movie jumps to the same spot automatically. A background heartbeat keeps everyone in sync and corrects drift.
+- **👑 Host-controlled playback** — only the **host** (the person who created the room) can play, pause, seek, or switch the video. Everyone else just follows along, so the stream stays smooth even with lots of people in the room. Any member can press **🎬 Take control** to become the host (handy if the host leaves).
+- **🔄 Synced playback** — when the host hits play, pause, or seeks, everyone's movie jumps to the same spot automatically. A background heartbeat keeps everyone in sync and corrects drift.
 - **➕ Add-URL playlist** — paste your movie links and build a queue. Supports:
   - Direct video files (`.mp4`, `.webm`, `.mov`)
   - HLS live streams (`.m3u8`)

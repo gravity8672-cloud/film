@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>CineSync — Watch Together</title>
-  <link rel="stylesheet" href="styles.css?v=7" />
+  <link rel="stylesheet" href="styles.css?v=8" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -70,6 +70,8 @@
         </div>
         <div class="now-playing" id="nowPlaying"></div>
         <div class="sync-bar">
+          <span id="hostNote" class="host-note"></span>
+          <button id="takeControlBtn" class="btn btn-small hidden">🎬 Take control</button>
           <button id="resyncBtn" class="btn btn-small">🔄 Re-sync to room</button>
           <label class="auto-sync">
             <input type="checkbox" id="autoSyncToggle" checked />
@@ -109,6 +111,6 @@
 
   <div id="toast" class="toast hidden"></div>
 
-  <script type="module" src="app.js?v=7"></script>
+  <script type="module" src="app.js?v=8"></script>
 </body>
 </html>
