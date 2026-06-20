@@ -14,10 +14,10 @@ const APP_ID = 'cinesync/v2'
 // ---- DOM ----
 const $ = (id) => document.getElementById(id)
 const lobby = $('lobby'), roomEl = $('room')
-const nameInput = $('nameInput'), joinCodeInput = $('joinCodeInput')
+const nameInput = $('nameInput'), joinCodeInput = $('joinCodeInput'), customCodeInput = $('customCodeInput')
 const createBtn = $('createBtn'), joinBtn = $('joinBtn')
 const roomCodeLabel = $('roomCodeLabel'), statusDot = $('statusDot'), statusText = $('statusText'), peerCount = $('peerCount')
-const shareBtn = $('shareBtn'), leaveBtn = $('leaveBtn')
+const shareBtn = $('shareBtn'), leaveBtn = $('leaveBtn'), reconnectBtn = $('reconnectBtn')
 const video = $('video'), ytContainer = $('ytContainer'), emptyState = $('emptyState'), playerWrap = $('playerWrap')
 const nowPlaying = $('nowPlaying'), resyncBtn = $('resyncBtn'), autoSyncToggle = $('autoSyncToggle')
 const addForm = $('addForm'), urlInput = $('urlInput'), titleInput = $('titleInput'), playlistEl = $('playlist')
@@ -38,6 +38,7 @@ let activeKind = null       // 'video' | 'youtube'
 // ---- Transport (MQTT bus) ----
 let mqttClient = null
 let busTopic = null
+let currentRoomCode = null
 let peers = {}              // id -> { name, last }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +56,18 @@ function genCode() {
   let s = ''
   for (let i = 0; i < 5; i++) s += chars[Math.floor(Math.random() * chars.length)]
   return s
+}
+
+// Clean a user-typed room code: uppercase letters/numbers only, max 12 chars.
+function sanitizeCode(v) {
+  return (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12)
+}
+
+// Deterministic color per member id, so each name gets a stable dot color.
+function colorFor(id) {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360
+  return `hsl(${h}, 70%, 58%)`
 }
 
 function detectType(url) {
@@ -339,8 +352,18 @@ function tryBroker(mqtt, url, roomCode) {
   return new Promise((resolve) => {
     let settled = false
     let client
+    const willTopic = APP_ID + '/' + roomCode
     try {
-      client = mqtt.connect(url, { clientId: 'cs_' + myId, clean: true, keepalive: 30, reconnectPeriod: 5000, connectTimeout: 8000 })
+      client = mqtt.connect(url, {
+        clientId: 'cs_' + myId, clean: true, keepalive: 30, reconnectPeriod: 5000, connectTimeout: 8000,
+        // Last Will: if this client drops (tab closed, connection lost), the
+        // broker auto-publishes this "bye" so others are notified immediately.
+        will: {
+          topic: willTopic,
+          payload: JSON.stringify({ t: 'bye', _from: myId, name: myName }),
+          qos: 0, retain: false
+        }
+      })
     } catch { return resolve(null) }
     const timer = setTimeout(() => {
       if (!settled) { settled = true; try { client.end(true) } catch {}; resolve(null) }
@@ -377,8 +400,15 @@ function setupBus(roomCode) {
     try { handleBus(JSON.parse(payload.toString())) } catch {}
   })
   mqttClient.on('reconnect', () => setStatus('connecting'))
-  mqttClient.on('connect', () => { setStatus('connected'); publishBus({ t: 'hello', name: myName }) })
+  mqttClient.on('offline', () => setStatus('connecting'))
   mqttClient.on('close', () => setStatus('connecting'))
+  // On every (re)connect: re-subscribe (clean sessions don't auto-resub) and
+  // re-announce so the room sees us and sends back the current state.
+  mqttClient.on('connect', () => {
+    setStatus('connected')
+    try { mqttClient.subscribe(busTopic) } catch {}
+    publishBus({ t: 'hello', name: myName })
+  })
 
   setStatus('connected')
   publishBus({ t: 'hello', name: myName })
@@ -386,6 +416,36 @@ function setupBus(roomCode) {
   setInterval(() => publishBus({ t: 'presence', name: myName }), 5000)
   setInterval(prunePeers, 5000)
 }
+
+// Reconnect on demand (button) or when the tab comes back to the foreground.
+async function reconnectNow() {
+  if (!currentRoomCode) return
+  showToast('Reconnecting…')
+  setStatus('connecting')
+  try { if (mqttClient) mqttClient.end(true) } catch {}
+  mqttClient = null
+  peers = {}
+  updatePeerCount()
+  let ok = false
+  try { ok = await connectBus(currentRoomCode) } catch { ok = false }
+  if (ok) showToast('Reconnected ✅')
+  else { setStatus('error'); showToast('Still offline — check your internet', 5000) }
+}
+
+// Browsers suspend background tabs and can silently drop the connection.
+// When we come back to the foreground, make sure we're still connected.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !currentRoomCode) return
+  if (!mqttClient || !mqttClient.connected) {
+    reconnectNow()
+  } else {
+    // Connected but possibly stale — re-announce to re-sync.
+    publishBus({ t: 'hello', name: myName })
+  }
+})
+window.addEventListener('online', () => {
+  if (currentRoomCode && (!mqttClient || !mqttClient.connected)) reconnectNow()
+})
 
 function publishBus(obj) {
   if (!mqttClient || !busTopic) return
@@ -395,18 +455,24 @@ function publishBus(obj) {
 
 function handleBus(m) {
   if (!m || m._from === myId) return
+  if (m.t === 'bye') { handleBye(m); return }
   const now = Date.now()
   if (m._from) {
     const known = !!peers[m._from]
     peers[m._from] = { name: m.name || (peers[m._from] && peers[m._from].name) || 'Guest', last: now }
-    if (!known) { updatePeerCount(); showToast('🎉 ' + peers[m._from].name + ' connected!') }
-    else updatePeerCount()
+    if (!known) {
+      updatePeerCount()
+      addChat('', '✅ ' + peers[m._from].name + ' joined the room', true)
+      showToast('🎉 ' + peers[m._from].name + ' joined!')
+      beep(700)
+    } else {
+      updatePeerCount()
+    }
   }
   switch (m.t) {
     case 'hello':
-      addChat('', (m.name || 'Someone') + ' joined', true)
+      // newcomer announced themselves -> reply with presence + current state
       publishBus({ t: 'presence', name: myName })
-      // send current state to the newcomer
       setTimeout(() => publishBus({ t: 'state', to: m._from, snap: snapshot() }), 400)
       break
     case 'presence':
@@ -427,13 +493,46 @@ function handleBus(m) {
   }
 }
 
+// A member left (sent explicitly on leave, or by the broker's Last Will).
+function handleBye(m) {
+  const p = peers[m._from]
+  const name = (p && p.name) || m.name || 'Someone'
+  if (p) { delete peers[m._from]; updatePeerCount() }
+  addChat('', '👋 ' + name + ' left the room', true)
+  showToast('👋 ' + name + ' left')
+  beep(380)
+}
+
 function prunePeers() {
   const now = Date.now()
-  let changed = false
   for (const id in peers) {
-    if (now - peers[id].last > 16000) { delete peers[id]; changed = true }
+    if (now - peers[id].last > 16000) {
+      const name = peers[id].name
+      delete peers[id]
+      updatePeerCount()
+      addChat('', '👋 ' + name + ' left the room', true)
+      showToast('👋 ' + name + ' left')
+      beep(380)
+    }
   }
-  if (changed) updatePeerCount()
+}
+
+// Soft notification beep (Web Audio — no file needed).
+let audioCtx = null
+function beep(freq = 600, dur = 0.12) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)()
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+    const o = audioCtx.createOscillator()
+    const g = audioCtx.createGain()
+    o.type = 'sine'
+    o.frequency.value = freq
+    g.gain.value = 0.06
+    o.connect(g); g.connect(audioCtx.destination)
+    o.start()
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + dur)
+    o.stop(audioCtx.currentTime + dur)
+  } catch {}
 }
 
 // ---- Typed senders used across the app ----
@@ -444,6 +543,20 @@ function sendHello()        { publishBus({ t: 'hello', name: myName }) }
 
 function updatePeerCount() {
   peerCount.textContent = Object.keys(peers).length + 1
+  renderMembers()
+}
+
+// Render the list of everyone in the room (self + connected peers).
+function renderMembers() {
+  const bar = $('membersBar')
+  if (!bar) return
+  const list = [{ id: myId, name: myName, me: true }]
+  for (const id in peers) list.push({ id, name: peers[id].name || 'Guest' })
+  bar.innerHTML = '<span class="members-label">👥 In this room:</span>' + list.map((m) =>
+    `<span class="member-chip${m.me ? ' me' : ''}">
+       <span class="member-dot" style="background:${colorFor(m.id)}"></span>
+       ${escapeHtml(m.name)}${m.me ? ' <em>(you)</em>' : ''}
+     </span>`).join('')
 }
 
 function setStatus(state) {
@@ -457,6 +570,7 @@ function setStatus(state) {
 async function enterRoom(code) {
   myName = (nameInput.value || '').trim() || 'Guest'
   code = code.toUpperCase()
+  currentRoomCode = code
   roomCodeLabel.textContent = code
   lobby.classList.add('hidden')
   roomEl.classList.remove('hidden')
@@ -473,22 +587,39 @@ async function enterRoom(code) {
     return
   }
   addChat('', 'You joined as ' + myName, true)
+  renderMembers()
 }
 
 // ---------------------------------------------------------------------------
 // Wire up UI
 // ---------------------------------------------------------------------------
-createBtn.addEventListener('click', () => enterRoom(genCode()))
+createBtn.addEventListener('click', () => {
+  const custom = sanitizeCode(customCodeInput.value)
+  enterRoom(custom || genCode())
+})
 joinBtn.addEventListener('click', () => {
-  const code = (joinCodeInput.value || '').trim()
+  const code = sanitizeCode(joinCodeInput.value)
   if (!code) { showToast('Enter a room code'); return }
   enterRoom(code)
 })
 joinCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinBtn.click() })
+customCodeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createBtn.click() })
 
 leaveBtn.addEventListener('click', () => {
-  if (mqttClient) { try { mqttClient.end(true) } catch {} }
+  currentRoomCode = null
+  if (mqttClient) {
+    try { publishBus({ t: 'bye', name: myName }); mqttClient.end(true) } catch {}
+  }
   location.href = location.pathname
+})
+
+reconnectBtn.addEventListener('click', () => reconnectNow())
+
+// Only announce "bye" on an actual page unload (close/navigate away).
+// We intentionally do NOT do this on tab-switch/visibility changes, so
+// hopping to Spotify/Discord won't kick you out of the room.
+window.addEventListener('beforeunload', () => {
+  if (currentRoomCode) { try { publishBus({ t: 'bye', name: myName }) } catch {} }
 })
 
 shareBtn.addEventListener('click', async () => {

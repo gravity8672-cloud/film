@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>CineSync — Watch Together</title>
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=7" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 </head>
 <body>
@@ -23,15 +23,18 @@
       </label>
 
       <div class="lobby-actions">
-        <button id="createBtn" class="btn btn-primary">Create a room</button>
+        <div class="create-box">
+          <input id="customCodeInput" type="text" placeholder="Pick a room code (optional)" maxlength="12" autocomplete="off" />
+          <button id="createBtn" class="btn btn-primary btn-block">Create room</button>
+        </div>
         <div class="or">or</div>
         <div class="join-row">
-          <input id="joinCodeInput" type="text" placeholder="Enter room code" maxlength="8" autocomplete="off" />
+          <input id="joinCodeInput" type="text" placeholder="Enter room code" maxlength="12" autocomplete="off" />
           <button id="joinBtn" class="btn">Join</button>
         </div>
       </div>
 
-      <p class="hint">Create a room, then share the link or code. Everyone who opens it watches together.</p>
+      <p class="hint">Create a room (pick your own code or leave it blank for a random one), then share the link or code. Everyone who opens it watches together.</p>
     </div>
   </section>
 
@@ -46,9 +49,12 @@
       </div>
       <div class="topbar-actions">
         <button id="shareBtn" class="btn btn-small">🔗 Share link</button>
+        <button id="reconnectBtn" class="btn btn-small">↻ Reconnect</button>
         <button id="leaveBtn" class="btn btn-small btn-ghost">Leave</button>
       </div>
     </header>
+
+    <div id="membersBar" class="members-bar"></div>
 
     <div class="stage">
       <!-- PLAYER -->
@@ -103,6 +109,6 @@
 
   <div id="toast" class="toast hidden"></div>
 
-  <script type="module" src="app.js?v=4"></script>
+  <script type="module" src="app.js?v=7"></script>
 </body>
 </html>
