@@ -66,19 +66,70 @@ input::placeholder { color: #5b6378; }
 
 /* ---------- Lobby ---------- */
 .lobby {
+  position: relative;
   min-height: 100%;
   display: grid;
   place-items: center;
   padding: 24px;
+  overflow: hidden;
 }
+/* Animated Lucy background — slow Ken-Burns drift */
+.lobby::before {
+  content: "";
+  position: absolute;
+  inset: -5%;
+  background: url("lucy-bg.jpg") center/cover no-repeat;
+  animation: lobbyKenBurns 34s ease-in-out infinite alternate;
+  z-index: 0;
+}
+/* Dark scrim so the card text stays readable over the artwork */
+.lobby::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1100px 700px at 32% 42%, rgba(11,13,18,.35), transparent 70%),
+    linear-gradient(180deg, rgba(11,13,18,.55), rgba(11,13,18,.82));
+  z-index: 1;
+}
+@keyframes lobbyKenBurns {
+  from { transform: scale(1) translate(0, 0); }
+  to   { transform: scale(1.12) translate(-2%, -1.5%); }
+}
+
+/* Drifting sakura petals (added by JS) */
+.petal-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
+.petal {
+  position: absolute;
+  top: -6%;
+  background: radial-gradient(circle at 30% 30%, #ffd9ec, #ff7ab8);
+  border-radius: 100% 0 100% 0;
+  filter: drop-shadow(0 0 4px rgba(255,120,184,.55));
+  animation-name: petalFall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+@keyframes petalFall {
+  0%   { transform: translateY(-10vh) translateX(0) rotate(0deg); }
+  100% { transform: translateY(112vh) translateX(48px) rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lobby::before, .petal { animation: none; }
+}
+
 .lobby-card {
+  position: relative;
+  z-index: 3;
   width: 100%;
   max-width: 440px;
-  background: var(--panel);
+  background: rgba(23, 27, 37, .82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--border);
   border-radius: 20px;
   padding: 34px 30px;
-  box-shadow: 0 30px 80px -20px rgba(0,0,0,.6);
+  box-shadow: 0 30px 80px -20px rgba(0,0,0,.7);
 }
 .logo { font-size: 30px; font-weight: 800; letter-spacing: -.5px; }
 .logo span { background: linear-gradient(135deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }

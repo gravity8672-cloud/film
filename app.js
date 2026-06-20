@@ -738,4 +738,25 @@ if (presetRoom) {
   nameInput.focus()
 }
 
+// Lobby ambience: drifting sakura petals over the Lucy background.
+;(function spawnPetals() {
+  const lobbyEl = document.getElementById('lobby')
+  if (!lobbyEl) return
+  const layer = document.createElement('div')
+  layer.className = 'petal-layer'
+  lobbyEl.appendChild(layer)
+  for (let i = 0; i < 14; i++) {
+    const p = document.createElement('span')
+    p.className = 'petal'
+    const size = 6 + Math.random() * 10
+    p.style.left = (Math.random() * 100) + '%'
+    p.style.width = size + 'px'
+    p.style.height = size + 'px'
+    p.style.animationDuration = (8 + Math.random() * 10) + 's'
+    p.style.animationDelay = (-Math.random() * 12) + 's'
+    p.style.opacity = (0.4 + Math.random() * 0.5).toFixed(2)
+    layer.appendChild(p)
+  }
+})()
+
 renderPlaylist()
